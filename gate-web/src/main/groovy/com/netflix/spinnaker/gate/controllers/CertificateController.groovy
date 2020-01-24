@@ -17,7 +17,6 @@
 package com.netflix.spinnaker.gate.controllers
 
 import com.netflix.spinnaker.gate.services.CertificateService
-import com.netflix.spinnaker.gate.services.internal.ClouddriverServiceSelector
 import io.swagger.annotations.ApiOperation
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.web.bind.annotation.PathVariable

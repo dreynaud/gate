@@ -30,9 +30,6 @@ import com.netflix.spinnaker.filters.AuthenticatedRequestFilter
 import com.netflix.spinnaker.gate.config.PostConnectionConfiguringJedisConnectionFactory.ConnectionPostProcessor
 import com.netflix.spinnaker.gate.converters.JsonHttpMessageConverter
 import com.netflix.spinnaker.gate.converters.YamlHttpMessageConverter
-import com.netflix.spinnaker.gate.filters.CorsFilter
-import com.netflix.spinnaker.gate.filters.GateOriginValidator
-import com.netflix.spinnaker.gate.filters.OriginValidator
 import com.netflix.spinnaker.gate.retrofit.EurekaOkClient
 import com.netflix.spinnaker.gate.retrofit.Slf4jRetrofitLogger
 import com.netflix.spinnaker.gate.services.EurekaLookupService
@@ -70,6 +67,7 @@ import retrofit.RequestInterceptor
 import retrofit.RestAdapter
 import retrofit.converter.JacksonConverter
 
+import javax.annotation.Nullable
 import javax.servlet.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -187,17 +185,31 @@ class GateConfig extends RedisHttpSessionConfiguration {
   }
 
   @Bean
-  ClouddriverServiceSelector clouddriverServiceSelector(ClouddriverService defaultClouddriverService, OkHttpClient okHttpClient) {
+  ClouddriverServiceSelector clouddriverServiceSelector(ClouddriverService defaultClouddriverService,
+                                                        OkHttpClient okHttpClient,
+                                                        Optional<DynamicRoutingConfigProperties> dynamicRoutingConfigProperties) {
     // support named clouddriver service clients
-    Map<String, ClouddriverService> dynamicServices = [:]
+
     if (serviceConfiguration.getService("clouddriver").getConfig().containsKey("dynamicEndpoints")) {
+      log.info("Creating a v1 ClouddriverServiceSelector configuration based on the services.clouddriver.config.dynamicEndpoints property")
       def endpoints = (Map<String, String>) serviceConfiguration.getService("clouddriver").getConfig().get("dynamicEndpoints")
-      dynamicServices = (Map<String, ClouddriverService>) endpoints.collectEntries { k, v ->
+      Map<String, ClouddriverService> dynamicServices = (Map<String, ClouddriverService>) endpoints.collectEntries { k, v ->
         [k, createClient("clouddriver", ClouddriverService, okHttpClient, k, false)]
       }
+
+      // TODO: make a v2 config out of that v1 config
+      return new ClouddriverServiceSelector(defaultClouddriverService, dynamicServices)
+    } else if (dynamicRoutingConfigProperties.isPresent() && dynamicRoutingConfigProperties.get().clouddriver != null) {
+      log.info("Creating a v2 ClouddriverServiceSelector configuration based on the dynamic-routing.clouddriver property")
     }
 
-    return new ClouddriverServiceSelector(defaultClouddriverService, dynamicServices)
+
+    return new ServiceSelector<ClouddriverService>() {
+      @Override
+      ClouddriverService select(@Nullable String sourceApp, @Nullable String destinationApp) {
+        return defaultClouddriverService;
+      }
+    }
   }
 
   //---- semi-optional components:
