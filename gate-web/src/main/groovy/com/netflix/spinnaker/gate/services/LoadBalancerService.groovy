@@ -18,9 +18,13 @@ package com.netflix.spinnaker.gate.services
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.netflix.spinnaker.gate.config.InsightConfiguration
+import com.netflix.spinnaker.gate.interceptors.RequestContextInterceptor
+import com.netflix.spinnaker.gate.security.RequestContext
 import com.netflix.spinnaker.gate.services.commands.HystrixFactory
 import com.netflix.spinnaker.gate.services.internal.ClouddriverServiceSelector
+import com.netflix.spinnaker.security.AuthenticatedRequest
 import groovy.transform.CompileStatic
+import org.slf4j.MDC
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Component
 import retrofit.RetrofitError
@@ -57,7 +61,7 @@ class LoadBalancerService {
         def service = clouddriverServiceSelector.select(selectorKey)
         def accountDetails = objectMapper.convertValue(service.getAccount(account), Map)
         def loadBalancerDetails = service.getLoadBalancerDetails(provider, account, region, name)
-        
+
         loadBalancerDetails = loadBalancerDetails.collect { loadBalancerDetail ->
           def loadBalancerContext = loadBalancerDetail.collectEntries {
             return it.value instanceof String ? [it.key, it.value] : [it.key, ""]
@@ -89,7 +93,24 @@ class LoadBalancerService {
   List getApplicationLoadBalancers(String appName, String selectorKey) {
     HystrixFactory.newListCommand(GROUP,
       "getApplicationLoadBalancers") {
-      clouddriverServiceSelector.select(selectorKey).getApplicationLoadBalancers(appName)
+      clouddriverServiceSelector.withContext(fromRequestContextOrAuthenticatedRequest()).getApplicationLoadBalancers(appName)
     } execute()
+  }
+
+  private RequestContext fromRequestContextOrAuthenticatedRequest() {
+    RequestContext context = RequestContext.get()
+    if (context == null) {
+      RequestContext.set(new RequestContext(
+        AuthenticatedRequest.getSpinnakerUserOrigin().orElse(null),
+        AuthenticatedRequest.getSpinnakerUser().orElse(null)))
+
+      // TODO: why private?
+//        RequestContext.setApplication(AuthenticatedRequest.getSpinnakerApplication())
+      RequestContext.setExecutionId(AuthenticatedRequest.getSpinnakerExecutionId().orElse(null))
+
+      // TODO: where would we get that?
+//      RequestContext.setExecutionType()
+    }
+    return RequestContext.get();
   }
 }

@@ -40,6 +40,7 @@ import com.netflix.spinnaker.gate.retrofit.Slf4jRetrofitLogger
 import com.netflix.spinnaker.gate.services.EurekaLookupService
 import com.netflix.spinnaker.gate.services.internal.*
 import com.netflix.spinnaker.kork.dynamicconfig.DynamicConfigService
+import com.netflix.spinnaker.kork.web.selector.ByOriginServiceSelector
 import com.netflix.spinnaker.kork.web.selector.DefaultServiceSelector
 import com.netflix.spinnaker.kork.web.selector.SelectableService
 import com.netflix.spinnaker.kork.web.selector.ServiceSelector
@@ -82,7 +83,7 @@ import static retrofit.Endpoints.newFixedEndpoint
 @CompileStatic
 @Configuration
 @Slf4j
-@EnableConfigurationProperties(FiatClientConfigurationProperties)
+@EnableConfigurationProperties([FiatClientConfigurationProperties, DynamicRoutingConfigProperties])
 @Import([PluginsAutoConfiguration, DeckPluginConfiguration])
 class GateConfig extends RedisHttpSessionConfiguration {
 
@@ -191,17 +192,43 @@ class GateConfig extends RedisHttpSessionConfiguration {
   }
 
   @Bean
-  ClouddriverServiceSelector clouddriverServiceSelector(ClouddriverService defaultClouddriverService, OkHttpClient okHttpClient) {
-    // support named clouddriver service clients
-    Map<String, ClouddriverService> dynamicServices = [:]
+  ClouddriverServiceSelector clouddriverServiceSelector(ClouddriverService defaultClouddriverService,
+                                                        OkHttpClient okHttpClient,
+                                                        DynamicConfigService dynamicConfigService,
+                                                        DynamicRoutingConfigProperties properties) {
     if (serviceConfiguration.getService("clouddriver").getConfig().containsKey("dynamicEndpoints")) {
       def endpoints = (Map<String, String>) serviceConfiguration.getService("clouddriver").getConfig().get("dynamicEndpoints")
-      dynamicServices = (Map<String, ClouddriverService>) endpoints.collectEntries { k, v ->
-        [k, createClient("clouddriver", ClouddriverService, okHttpClient, k, false)]
+      // translates the following config:
+      //   dynamicEndpoints:
+      //     deck: url
+
+      // into a SelectableService that would be produced by an equivalent config:
+      //   baseUrl: url
+      //   config:
+      //     selectorClass: com.netflix.spinnaker.kork.web.selector.BySourceAppSelector
+      //     priority: 1
+      //     origin: deck
+
+      def defaultSelector = new DefaultServiceSelector(
+        defaultClouddriverService,
+        1,
+        null)
+
+      List<ServiceSelector> selectors = []
+      endpoints.each { sourceApp, url ->
+        def client = new EurekaOkClient(okHttpClient, registry, "clouddriver", eurekaLookupService)
+        def service = buildService(client, ClouddriverService, newFixedEndpoint(url))
+        selectors << new BySourceAppSelector(service, 2, sourceApp)
       }
+
+      log.info(DynamicRoutingConfigProperties.ENABLED_PROPERTY + " = " + properties.enabled);
+      log.info(DynamicRoutingConfigProperties.ClouddriverConfigProperties.ENABLED_PROPERTY + " = " + properties.clouddriver.enabled);
+
+      return new ClouddriverServiceSelector(new SelectableService(selectors + defaultSelector), dynamicConfigService)
     }
 
-    return new ClouddriverServiceSelector(defaultClouddriverService, dynamicServices)
+    SelectableService selectableService = createClientSelector("clouddriver", ClouddriverService, okHttpClient)
+    return new ClouddriverServiceSelector(selectableService, dynamicConfigService)
   }
 
   //---- semi-optional components:
